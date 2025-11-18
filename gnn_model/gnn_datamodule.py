@@ -166,7 +166,6 @@ class GNNDataModule(pl.LightningDataModule):
         window_size="12h",          # binning window
         train_val_split_ratio=0.9,  # Default fallback, should be passed from training script
         sampling_mode="sequential",  # "sequential" or "random" - controls bin distribution within ranks
-        global_sequential_validation=False,  # Use BalancedSequentialShard (per-rank) for evaluation
         **kwargs,
     ):
         super().__init__()
@@ -600,10 +599,6 @@ class GNNDataModule(pl.LightningDataModule):
         idx_preview = list(iter(sampler))
         first_bin = self.train_bin_names[idx_preview[0]] if idx_preview else None
         last_bin = self.train_bin_names[idx_preview[-1]] if idx_preview else None
-
-        # (Optional) if random, initialize epoch=0 here; Lightning won't call set_epoch for custom samplers
-        if isinstance(sampler, BalancedRandomShard):
-            sampler.set_epoch(0)
 
         print(f"[DL] TRAIN window={self.hparams.train_start.date()}..{self.hparams.train_end.date()} "
               f"bins={n} rank={rank}/{world_size} -> idx[{len(sampler)}] "

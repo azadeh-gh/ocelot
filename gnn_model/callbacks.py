@@ -74,26 +74,37 @@ def log_rank_header(stage: str, epoch: int):
 class AdvanceSamplerEpoch(pl.Callback):
     """Ensure random samplers reshuffle each epoch."""
     def on_train_epoch_start(self, trainer, pl_module):
-        # Try to grab the actual dataloader object Lightning is iterating
-        dl = None
-        if (hasattr(trainer.fit_loop, "epoch_loop") and
-                hasattr(trainer.fit_loop.epoch_loop, "_loader")):
-            dl = getattr(
-                trainer.fit_loop.epoch_loop._loader, "_dataloader", None
-            )
-        if dl is None and hasattr(trainer.fit_loop, "_combined_loader"):
-            dl = getattr(
-                trainer.fit_loop._combined_loader, "_loader", None
-            )
+        try:
+            # Try to grab the actual dataloader object Lightning is iterating
+            dl = None
+            if (hasattr(trainer.fit_loop, "epoch_loop") and
+                    hasattr(trainer.fit_loop.epoch_loop, "_loader")):
+                dl = getattr(
+                    trainer.fit_loop.epoch_loop._loader, "_dataloader", None
+                )
+            if dl is None and hasattr(trainer.fit_loop, "_combined_loader"):
+                dl = getattr(
+                    trainer.fit_loop._combined_loader, "_loader", None
+                )
 
-        if dl is None:
-            return  # can't find it; nothing to do
+            if dl is None:
+                # Can't find a dataloader – nothing to do this epoch
+                return
 
-        dls = dl if isinstance(dl, (list, tuple)) else [dl]
-        for d in dls:
-            s = getattr(d, "sampler", None)
-            if hasattr(s, "set_epoch"):
-                s.set_epoch(pl_module.current_epoch)
+            dls = dl if isinstance(dl, (list, tuple)) else [dl]
+            for d in dls:
+                s = getattr(d, "sampler", None)
+                if hasattr(s, "set_epoch"):
+                    s.set_epoch(pl_module.current_epoch)
+
+            # Be robust to Lightning internal changes. Only warn on rank 0.
+            if _is_rank0():
+                print(
+                    f"[AdvanceSamplerEpoch] WARNING: "
+                    f"Could not advance sampler epoch due to: {e}"
+                )
+            # Fail soft: training continues, but sampler epoch may stay unchanged.
+            return
 
 # -----------------------------
 # Train resampling per epoch (SYNCED)
@@ -138,7 +149,6 @@ class ResampleDataCallback(pl.Callback):
         assert self.mode in {"random", "sequential"}
         self.resample_val = bool(resample_val)
         self.seq_stride = pd.Timedelta(days=seq_stride_days)
-        self._seq_cursor: Optional[pd.Timestamp] = None  # only for sequential mode
         self._state_loaded_from_checkpoint: bool = False  # Explicit flag for resume detection
 
         self._check_date_ranges()
@@ -146,17 +156,12 @@ class ResampleDataCallback(pl.Callback):
     # ---- checkpoint persistence -----------------------
     def state_dict(self):
         return {
-            "_seq_cursor": self._seq_cursor,
             # Also save the current train window so we can restore it on resume
             "_saved_train_start": getattr(self, "_saved_train_start", None),
             "_saved_train_end": getattr(self, "_saved_train_end", None),
         }
 
     def load_state_dict(self, state):
-        cur = state.get("_seq_cursor", None)
-        if cur is not None:
-            self._seq_cursor = pd.to_datetime(cur)
-
         # Restore the saved train window
         train_start = state.get("_saved_train_start", None)
         if train_start is not None:
